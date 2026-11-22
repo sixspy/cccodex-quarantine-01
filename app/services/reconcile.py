@@ -29,7 +29,7 @@ def run_reconcile(db_path: str | None = None) -> dict:
         abandoned = conn.execute(
             "SELECT COUNT(*) AS c FROM quarantine_rows WHERE status='已废弃'"
         ).fetchone()["c"]
-        # mismatch: item says 入舱 but no open quarantine row
+        # mismatch: item says 入舱 but no open quarantine row, or row lacks voucher
         mismatch = conn.execute(
             """
             SELECT COUNT(*) AS c FROM capture_items i
@@ -40,9 +40,18 @@ def run_reconcile(db_path: str | None = None) -> dict:
               )
             """
         ).fetchone()["c"]
+        missing_voucher = conn.execute(
+            """
+            SELECT COUNT(*) AS c FROM quarantine_rows r
+            WHERE NOT EXISTS (
+              SELECT 1 FROM entry_vouchers v WHERE v.row_id=r.id
+            )
+            """
+        ).fetchone()["c"]
+        mismatch += missing_voucher
         summary = (
             f"{label}：待复核{open_rows} / 已放行{released} / 回炉中{reworking} / "
-            f"已废弃{abandoned} / 错位{mismatch}"
+            f"已废弃{abandoned} / 错位{mismatch} / 缺凭证{missing_voucher}"
         )
         cur = conn.execute(
             """
@@ -67,6 +76,9 @@ def dashboard(db_path: str | None = None) -> dict:
             "items": conn.execute("SELECT COUNT(*) AS c FROM capture_items").fetchone()["c"],
             "pending_rows": conn.execute(
                 "SELECT COUNT(*) AS c FROM quarantine_rows WHERE status='待复核'"
+            ).fetchone()["c"],
+            "vouchers": conn.execute(
+                "SELECT COUNT(*) AS c FROM entry_vouchers"
             ).fetchone()["c"],
             "tickets_open": conn.execute(
                 "SELECT COUNT(*) AS c FROM review_tickets WHERE decision='待决'"

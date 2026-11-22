@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 from app.db import _meta_get, _meta_set, ensure_db, get_db
+from app.services import quarantine as quarantine_svc
 
 
 def seed_if_needed(db_path: str | None = None) -> None:
     ensure_db()
     with get_db(db_path) as conn:
+        # 历史舱行先补入舱凭证，保证“一舱行一凭证”（幂等）
+        backfilled = quarantine_svc.backfill_vouchers_conn(conn)
         if _meta_get(conn, "seeded") == "1":
+            if backfilled:
+                conn.execute(
+                    """
+                    INSERT INTO audit_events(actor, action, entity_type, entity_id, detail)
+                    VALUES ('system', '补入舱凭证', 'entry_voucher', ?, ?)
+                    """,
+                    (backfilled, f"历史舱行补凭证{backfilled}条"),
+                )
             return
         settings = [
             ("max_bin_open", "3", "同时开放隔离舱上限"),
@@ -15,6 +26,12 @@ def seed_if_needed(db_path: str | None = None) -> None:
             ("reconcile_label", "隔离对账口径A", "对账口径标签"),
             ("audit_keep_days", "30", "审计保留天数"),
             ("policy_default_bin", "BIN-A", "规则默认入舱号"),
+            # 只读口径：入舱落点只许兑现一边（旁路凭证表），页面只展示不可改
+            (
+                quarantine_svc.LANDING_MODE_KEY,
+                quarantine_svc.LANDING_MODE_VALUE,
+                "入舱落点口径（只读）",
+            ),
         ]
         conn.executemany(
             "INSERT OR IGNORE INTO lab_settings(key, value, label) VALUES (?,?,?)",
@@ -95,11 +112,39 @@ def seed_if_needed(db_path: str | None = None) -> None:
             )
             item_ids.append(cur.lastrowid)
         bin_a = conn.execute("SELECT id FROM quarantine_bins WHERE bin_code='BIN-A'").fetchone()["id"]
-        conn.execute(
+        cur_row = conn.execute(
             "INSERT INTO quarantine_rows(bin_id, item_id, reason, status) VALUES (?,?,?,?)",
             (bin_a, item_ids[9], "历史缺字段样例", "待复核"),
         )
-        row_id = conn.execute("SELECT id FROM quarantine_rows ORDER BY id DESC LIMIT 1").fetchone()["id"]
+        row_id = cur_row.lastrowid
+        hist_item = conn.execute(
+            "SELECT item_key, payload, quality, batch_id FROM capture_items WHERE id=?",
+            (item_ids[9],),
+        ).fetchone()
+        hist_batch = conn.execute(
+            "SELECT source_name FROM capture_batches WHERE id=?",
+            (hist_item["batch_id"],),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO entry_vouchers(
+              row_id, item_id, item_key, payload_snapshot, quality_snapshot,
+              batch_id, source_name, sample_fingerprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row_id,
+                item_ids[9],
+                hist_item["item_key"],
+                hist_item["payload"],
+                hist_item["quality"],
+                hist_item["batch_id"],
+                hist_batch["source_name"],
+                quarantine_svc.fingerprint_of(
+                    hist_item["item_key"], hist_item["quality"], hist_item["payload"]
+                ),
+            ),
+        )
         conn.execute(
             "INSERT INTO review_tickets(ticket_code, row_id, decision, reviewer, comment) VALUES (?,?,?,?,?)",
             ("REV-001", row_id, "待决", "", "等待复核"),

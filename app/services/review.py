@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.db import get_db
 from app.services import audit as audit_svc
+from app.services import quarantine as quarantine_svc
 from app.services.errors import ServiceError
 
 
@@ -9,15 +10,31 @@ def list_tickets(db_path: str | None = None) -> list[dict]:
     with get_db(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT t.*, r.status AS row_status, r.reason, i.item_key, b.bin_code
+            SELECT t.*, r.status AS row_status, r.reason,
+                   v.item_key, v.quality_snapshot AS quality,
+                   v.payload_snapshot AS payload, v.source_name,
+                   v.sample_fingerprint, b.bin_code,
+                   i.item_key AS live_item_key, i.quality AS live_quality,
+                   i.payload AS live_payload
             FROM review_tickets t
             JOIN quarantine_rows r ON r.id=t.row_id
-            JOIN capture_items i ON i.id=r.item_id
+            JOIN entry_vouchers v ON v.row_id=r.id
             JOIN quarantine_bins b ON b.id=r.bin_id
+            JOIN capture_items i ON i.id=r.item_id
             ORDER BY t.id DESC
             """
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            current = quarantine_svc.fingerprint_of(
+                d.pop("live_item_key") or "",
+                d.pop("live_quality") or "",
+                d.pop("live_payload") or "",
+            )
+            d["fingerprint_ok"] = current == d["sample_fingerprint"]
+            out.append(d)
+        return out
 
 
 def decide(
@@ -42,6 +59,8 @@ def decide(
         ).fetchone()
         if not row or row["status"] != "待复核":
             raise ServiceError("隔离行不可裁决")
+        # 样本指纹与舱内凭证拧花就拦住复核继续（放行/回炉/废弃一律不继续）
+        quarantine_svc.assert_fingerprint_intact(conn, row["id"])
         conn.execute(
             """
             UPDATE review_tickets
@@ -81,10 +100,10 @@ def decide(
             )
         out = conn.execute(
             """
-            SELECT t.*, r.status AS row_status, i.item_key
+            SELECT t.*, r.status AS row_status, v.item_key
             FROM review_tickets t
             JOIN quarantine_rows r ON r.id=t.row_id
-            JOIN capture_items i ON i.id=r.item_id
+            JOIN entry_vouchers v ON v.row_id=r.id
             WHERE t.id=?
             """,
             (ticket_id,),
