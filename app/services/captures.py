@@ -6,11 +6,21 @@ from app.services.errors import ServiceError
 
 
 def list_batches(db_path: str | None = None) -> list[dict]:
+    """抓取目录：计数在读取时现算，坏件只计尚未交给隔离舱的待检坏件。
+
+    坏件一旦入舱（status='入舱'）即从抓取侧坏件计数中扣掉，避免坏件数字
+    长期不掉、与隔离舱卡片两边重复计数。
+    """
     with get_db(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT id, batch_code, source_name, status, item_count, bad_count, note, created_at
-            FROM capture_batches ORDER BY id DESC
+            SELECT b.id, b.batch_code, b.source_name, b.status, b.note, b.created_at,
+              (SELECT COUNT(*) FROM capture_items i
+                 WHERE i.batch_id=b.id) AS item_count,
+              (SELECT COUNT(*) FROM capture_items i
+                 WHERE i.batch_id=b.id AND i.quality!='合格'
+                   AND i.status='待检') AS bad_count
+            FROM capture_batches b ORDER BY b.id DESC
             """
         ).fetchall()
         return [dict(r) for r in rows]
@@ -32,6 +42,13 @@ def get_batch(batch_id: int, db_path: str | None = None) -> dict:
         ).fetchall()
         data = dict(row)
         data["items"] = [dict(i) for i in items]
+        # 计数与抓取目录同口径：已交给隔离舱的坏件不再计入抓取侧坏件数
+        data["item_count"] = len(data["items"])
+        data["bad_count"] = sum(
+            1
+            for i in data["items"]
+            if i["quality"] != "合格" and i["status"] == "待检"
+        )
         return data
 
 
@@ -113,11 +130,15 @@ def close_batch(batch_id: int, db_path: str | None = None) -> dict:
 
 
 def _refresh_batch_counts(conn, batch_id: int) -> None:
+    """维护批次缓存计数；坏件只计尚未入舱的待检坏件，与列表口径一致。"""
     cnt = conn.execute(
         "SELECT COUNT(*) AS c FROM capture_items WHERE batch_id=?", (batch_id,)
     ).fetchone()["c"]
     bad = conn.execute(
-        "SELECT COUNT(*) AS c FROM capture_items WHERE batch_id=? AND quality!='合格'",
+        """
+        SELECT COUNT(*) AS c FROM capture_items
+        WHERE batch_id=? AND quality!='合格' AND status='待检'
+        """,
         (batch_id,),
     ).fetchone()["c"]
     conn.execute(

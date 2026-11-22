@@ -26,10 +26,15 @@ def get_site(site_id: int, db_path: str | None = None) -> dict:
             raise ServiceError("源站不存在", 404)
         batches = conn.execute(
             """
-            SELECT id, batch_code, status, item_count, bad_count, created_at
-            FROM capture_batches
-            WHERE source_name=?
-            ORDER BY id DESC
+            SELECT b.id, b.batch_code, b.status, b.created_at,
+              (SELECT COUNT(*) FROM capture_items i
+                 WHERE i.batch_id=b.id) AS item_count,
+              (SELECT COUNT(*) FROM capture_items i
+                 WHERE i.batch_id=b.id AND i.quality!='合格'
+                   AND i.status='待检') AS bad_count
+            FROM capture_batches b
+            WHERE b.source_name=?
+            ORDER BY b.id DESC
             """,
             (row["site_name"],),
         ).fetchall()
