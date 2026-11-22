@@ -83,21 +83,6 @@ CREATE TABLE IF NOT EXISTS quarantine_rows (
   UNIQUE(item_id)
 );
 
--- 入舱落点（旁路凭证表，唯一选边，不与物化文件并开）
--- 锁存入舱瞬间的条目键、载荷、质量标记与样本指纹；只 INSERT/SELECT，不提供 UPDATE。
-CREATE TABLE IF NOT EXISTS entry_vouchers (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  row_id INTEGER NOT NULL UNIQUE REFERENCES quarantine_rows(id),
-  item_id INTEGER NOT NULL,
-  item_key TEXT NOT NULL,
-  payload_snapshot TEXT NOT NULL,
-  quality_snapshot TEXT NOT NULL,
-  batch_id INTEGER NOT NULL,
-  source_name TEXT NOT NULL DEFAULT '',
-  sample_fingerprint TEXT NOT NULL,
-  entered_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 CREATE TABLE IF NOT EXISTS review_tickets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ticket_code TEXT NOT NULL UNIQUE,

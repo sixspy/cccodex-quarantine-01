@@ -15,17 +15,14 @@ export async function renderCaptures(el) {
     </div>
     <div class="card">
       <table>
-        <thead><tr><th>批号</th><th>来源</th><th>状态</th><th>条目数</th><th>坏件计数</th><th>操作</th></tr></thead>
+        <thead><tr><th>批号</th><th>来源</th><th>状态</th><th>条目/坏件</th><th>操作</th></tr></thead>
         <tbody>
           ${(data.items || []).map((b) => `
             <tr>
               <td>${b.batch_code}</td>
-              <td><span class="chip ok">${b.source_name}</span></td>
+              <td>${b.source_name}</td>
               <td><span class="chip">${b.status}</span></td>
-              <td>${b.item_count}</td>
-              <td>${b.bad_count > 0
-                ? `<span class="chip bad">坏件 ${b.bad_count}</span>`
-                : '<span class="chip ok">坏件 0</span>'}</td>
+              <td>${b.item_count} / <span class="chip bad">${b.bad_count}</span></td>
               <td class="row">
                 <button data-open="${b.id}">详情</button>
                 <button data-close="${b.id}">关闭</button>

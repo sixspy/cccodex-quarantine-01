@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from app.db import get_db
 from app.services import audit as audit_svc
-from app.services import quarantine as quarantine_svc
 from app.services import settings as settings_svc
 from app.services.errors import ServiceError
 
@@ -32,13 +31,6 @@ def run_job(job_id: int, succeed: bool = True, db_path: str | None = None) -> di
         max_attempt = int(settings_svc.get_value("rework_max_attempt", "3", db_path) or "3")
         if job["attempt"] > max_attempt:
             raise ServiceError("已超过回炉最大次数")
-        row = conn.execute(
-            "SELECT * FROM quarantine_rows WHERE id=?", (job["row_id"],)
-        ).fetchone()
-        if not row:
-            raise ServiceError("隔离行不存在", 404)
-        # 清洗入库前统一闸门：指纹拧花/凭证缺失一律拦下，回炉不得误吃漂件
-        quarantine_svc.assert_fingerprint_intact(conn, row["id"])
         conn.execute(
             """
             UPDATE rework_jobs SET status='执行中', started_at=datetime('now')
@@ -55,6 +47,9 @@ def run_job(job_id: int, succeed: bool = True, db_path: str | None = None) -> di
                 """,
                 (job_id,),
             )
+            row = conn.execute(
+                "SELECT * FROM quarantine_rows WHERE id=?", (job["row_id"],)
+            ).fetchone()
             conn.execute(
                 "UPDATE quarantine_rows SET status='已放行' WHERE id=?", (row["id"],)
             )
@@ -96,8 +91,6 @@ def enqueue_from_row(row_id: int, db_path: str | None = None) -> dict:
             raise ServiceError("隔离行不存在", 404)
         if row["status"] not in ("待复核", "回炉中"):
             raise ServiceError("当前状态不可回炉")
-        # 入回炉队列同样受指纹闸门约束
-        quarantine_svc.assert_fingerprint_intact(conn, row["id"])
         active = conn.execute(
             """
             SELECT id FROM rework_jobs
